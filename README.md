@@ -1,6 +1,6 @@
 # LembraAqui
 
-[baixe aqui.](https://github.com/fabioqueiroz1415/LembraAqui/releases/download/v1.0.1/app-debug.apk)
+baixe [aqui](https://github.com/fabioqueiroz1415/LembraAqui/releases/download/v1.0.1/app-debug.apk) o apk.
 
 Aplicativo Android nativo de lembretes baseados em lugares. O usuário cadastra uma área por latitude, longitude e raio e associa lembretes para **Chegando**, **No local** e **Saindo**. Os dados ficam somente no aparelho; não existe login, servidor ou backend.
 
