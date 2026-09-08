@@ -45,11 +45,15 @@ class NotificationHelper(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val notificationTitle = when (type) {
-            ReminderType.ARRIVING -> "chegando em $placeName"
-            ReminderType.DWELL -> "em $placeName"
-            ReminderType.LEAVING -> "saindo de $placeName"
+            ReminderType.ARRIVING -> "Você chegou: $placeName"
+            ReminderType.DWELL -> if (dwellMinutes != null && dwellMinutes > 0) {
+                "Você está há pelo menos $dwellMinutes min em: $placeName"
+            } else {
+                "Você está no local: $placeName"
+            }
+            ReminderType.LEAVING -> "Você saiu: $placeName"
         }
-        val notificationText = "lembrete: $message"
+        val notificationText = message
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_map)
