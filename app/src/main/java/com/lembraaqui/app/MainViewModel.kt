@@ -8,16 +8,46 @@ import com.lembraaqui.app.data.ReminderEntity
 import com.lembraaqui.app.domain.LocationTransition
 import com.lembraaqui.app.domain.ReminderType
 import com.lembraaqui.app.domain.RepeatMode
-import com.lembraaqui.app.domain.WeekdayMask
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
+import com.lembraaqui.app.concurrency.OperationRunner
+import com.lembraaqui.app.background.PlaceEventLocks
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import java.util.UUID
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as LembraAquiApplication).container
     private val repository = container.repository
+
+    private val operations = OperationRunner(viewModelScope)
+    val busy = operations.busy
+    val operationMessage = operations.message
+    fun dismissMessage(id: Long) = operations.dismiss(id)
+
+    private fun <T> mutatePlace(
+        key: String,
+        placeId: String,
+        onDone: (T) -> Unit = {},
+        onError: (String) -> Unit = {},
+        work: suspend () -> T
+    ) = operations.launch(key, onDone, onError = { message ->
+        operations.notify(message)
+        onError(message)
+    }) {
+        val result = PlaceEventLocks.withLock(placeId, work)
+        // Never hold an event lock while waiting for Google Play services:
+        // BroadcastReceivers must be able to finish their local work promptly.
+        syncPlace(placeId)
+        result
+    }
+
+    private suspend fun syncPlace(id: String) {
+        val result = container.geofenceManager.syncPlace(id)
+        if (result.isFailure) withContext(Dispatchers.Main.immediate) {
+            operations.notify("Dados salvos, mas o monitoramento não foi atualizado. Tente atualizar nas permissões: ${result.exceptionOrNull()?.message.orEmpty()}")
+        }
+    }
 
     val places = repository.places.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val history = repository.history.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -36,63 +66,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         onDone: (String) -> Unit,
         onError: (String) -> Unit
     ) {
-        viewModelScope.launch {
-            runCatching {
-                require(name.isNotBlank()) { "Informe um nome para o lugar." }
-                require(latitude in -90.0..90.0) { "Latitude inválida." }
-                require(longitude in -180.0..180.0) { "Longitude inválida." }
-                require(radiusMeters in 25f..5000f) { "Use um raio entre 25 m e 5000 m." }
-                val id = existing?.id ?: UUID.randomUUID().toString()
-                val monitoringAreaChanged = existing != null && (
-                    existing.latitude != latitude ||
-                        existing.longitude != longitude ||
-                        existing.radiusMeters != radiusMeters ||
-                        existing.active != active
-                    )
-                val preservePresence = existing != null && !monitoringAreaChanged && active
-                val place = PlaceEntity(
-                    id = id,
-                    name = name.trim(),
-                    latitude = latitude,
-                    longitude = longitude,
-                    radiusMeters = radiusMeters,
-                    active = active,
-                    createdAt = existing?.createdAt ?: System.currentTimeMillis(),
-                    inside = if (preservePresence) existing.inside else false,
-                    cycleId = existing?.cycleId ?: 0,
-                    lastTransitionAt = if (preservePresence) existing.lastTransitionAt else null,
-                    enteredAt = if (preservePresence) existing.enteredAt else null
+        val id = existing?.id ?: UUID.randomUUID().toString()
+        mutatePlace("place:${existing?.id ?: "new"}", id, onDone, onError) {
+            val current = existing?.let { repository.getPlace(it.id) ?: error("Este lugar foi excluído.") }
+            require(name.isNotBlank()) { "Informe um nome para o lugar." }
+            require(latitude in -90.0..90.0) { "Latitude inválida." }
+            require(longitude in -180.0..180.0) { "Longitude inválida." }
+            require(radiusMeters in 25f..5000f) { "Use um raio entre 25 m e 5000 m." }
+            val monitoringAreaChanged = current != null && (
+                current.latitude != latitude ||
+                    current.longitude != longitude ||
+                    current.radiusMeters != radiusMeters ||
+                    current.active != active
                 )
-                repository.savePlace(place)
-                container.geofenceManager.syncPlace(id)
-                if (place.inside) container.dwellScheduler.scheduleForPlace(id)
-                id
-            }.onSuccess(onDone).onFailure { onError(it.message ?: "Não foi possível salvar o lugar.") }
+            val preservePresence = current != null && !monitoringAreaChanged && active
+            val place = PlaceEntity(
+                id = id,
+                name = name.trim(),
+                latitude = latitude,
+                longitude = longitude,
+                radiusMeters = radiusMeters,
+                active = active,
+                createdAt = current?.createdAt ?: System.currentTimeMillis(),
+                inside = if (preservePresence) current.inside else false,
+                cycleId = current?.cycleId ?: 0,
+                lastTransitionAt = if (preservePresence) current.lastTransitionAt else null,
+                enteredAt = if (preservePresence) current.enteredAt else null
+            )
+            repository.savePlace(place)
+            container.dwellScheduler.scheduleForPlace(id)
+            id
         }
     }
 
     fun deletePlace(place: PlaceEntity, onDone: () -> Unit) {
-        viewModelScope.launch {
+        mutatePlace("place:${place.id}", place.id, onDone = { onDone() }) {
             container.dwellScheduler.cancelForPlace(place.id)
-            container.geofenceManager.removePlace(place.id)
             repository.deletePlace(place)
-            onDone()
         }
     }
 
     fun setPlaceActive(id: String, active: Boolean) {
-        viewModelScope.launch {
-            val place = repository.getPlace(id) ?: return@launch
+        mutatePlace("place:$id", id) {
+            val place = repository.getPlace(id) ?: return@mutatePlace
             repository.setPlaceActive(id, active)
-            if (active) {
-                // Reativar sempre começa sem um estado de presença herdado.
-                repository.updatePlaceState(id, false, place.cycleId, null, null)
-                container.geofenceManager.syncPlace(id)
-            } else {
-                container.geofenceManager.removePlace(id)
-                container.dwellScheduler.cancelForPlace(id)
-                repository.updatePlaceState(id, false, place.cycleId, null, null)
-            }
+            // Reativar ou pausar começa sem presença ou trabalhos herdados.
+            container.dwellScheduler.cancelForPlace(id)
+            repository.updatePlaceState(id, false, place.cycleId, null, null)
         }
     }
 
@@ -110,51 +130,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         onDone: () -> Unit,
         onError: (String) -> Unit
     ) {
-        viewModelScope.launch {
-            runCatching {
-                require(message.isNotBlank()) { "Escreva a mensagem do lembrete." }
-                if (type == ReminderType.DWELL) require((dwellMinutes ?: 0) in 1..1440) { "Use um tempo entre 1 minuto e 24 horas." }
-                require(daysMask != 0) { "Escolha pelo menos um dia da semana." }
-                require((startMinute == null) == (endMinute == null)) { "Informe início e fim do horário." }
-                val rearmingCompletedReminder = existing?.oneShotCompleted == true && active
-                val reminder = ReminderEntity(
-                    id = existing?.id ?: UUID.randomUUID().toString(),
-                    placeId = placeId,
-                    type = type.name,
-                    message = message.trim(),
-                    dwellMinutes = if (type == ReminderType.DWELL) dwellMinutes else null,
-                    startMinute = startMinute,
-                    endMinute = endMinute,
-                    daysMask = daysMask,
-                    repeatMode = repeatMode.name,
-                    active = active,
-                    createdAt = existing?.createdAt ?: System.currentTimeMillis(),
-                    oneShotCompleted = if (rearmingCompletedReminder) false else existing?.oneShotCompleted ?: false,
-                    lastTriggeredAt = if (rearmingCompletedReminder) null else existing?.lastTriggeredAt,
-                    lastTriggeredDayKey = if (rearmingCompletedReminder) null else existing?.lastTriggeredDayKey,
-                    lastTriggeredCycleId = if (rearmingCompletedReminder) null else existing?.lastTriggeredCycleId
-                )
-                repository.saveReminder(reminder)
-                container.geofenceManager.syncPlace(placeId)
-                container.dwellScheduler.scheduleForPlace(placeId)
-            }.onSuccess { onDone() }.onFailure { onError(it.message ?: "Não foi possível salvar o lembrete.") }
+        mutatePlace("reminder:${existing?.id ?: "new:$placeId"}", placeId, onDone = { onDone() }, onError = onError) {
+            requireNotNull(repository.getPlace(placeId)) { "Este lugar foi excluído." }
+            val current = existing?.let { repository.getReminder(it.id) ?: error("Este lembrete foi excluído.") }
+            require(message.isNotBlank()) { "Escreva a mensagem do lembrete." }
+            if (type == ReminderType.DWELL) require((dwellMinutes ?: 0) in 1..1440) { "Use um tempo entre 1 minuto e 24 horas." }
+            require(daysMask != 0) { "Escolha pelo menos um dia da semana." }
+            require((startMinute == null) == (endMinute == null)) { "Informe início e fim do horário." }
+            val rearmingCompletedReminder = current?.oneShotCompleted == true && active
+            val reminder = ReminderEntity(
+                id = current?.id ?: UUID.randomUUID().toString(),
+                placeId = placeId,
+                type = type.name,
+                message = message.trim(),
+                dwellMinutes = if (type == ReminderType.DWELL) dwellMinutes else null,
+                startMinute = startMinute,
+                endMinute = endMinute,
+                daysMask = daysMask,
+                repeatMode = repeatMode.name,
+                active = active,
+                createdAt = current?.createdAt ?: System.currentTimeMillis(),
+                oneShotCompleted = if (rearmingCompletedReminder) false else current?.oneShotCompleted ?: false,
+                lastTriggeredAt = if (rearmingCompletedReminder) null else current?.lastTriggeredAt,
+                lastTriggeredDayKey = if (rearmingCompletedReminder) null else current?.lastTriggeredDayKey,
+                lastTriggeredCycleId = if (rearmingCompletedReminder) null else current?.lastTriggeredCycleId
+            )
+            repository.saveReminder(reminder)
+            container.dwellScheduler.scheduleForPlace(placeId)
         }
     }
 
     fun deleteReminder(reminder: ReminderEntity, onDone: () -> Unit) {
-        viewModelScope.launch {
+        mutatePlace("reminder:${reminder.id}", reminder.placeId, onDone = { onDone() }) {
             repository.deleteReminder(reminder)
-            container.geofenceManager.syncPlace(reminder.placeId)
             container.dwellScheduler.scheduleForPlace(reminder.placeId)
-            onDone()
         }
     }
 
     fun setReminderActive(reminder: ReminderEntity, active: Boolean) {
-        viewModelScope.launch {
-            if (active && reminder.oneShotCompleted) {
+        mutatePlace("reminder:${reminder.id}", reminder.placeId) {
+            val current = repository.getReminder(reminder.id) ?: return@mutatePlace
+            if (active && current.oneShotCompleted) {
                 repository.saveReminder(
-                    reminder.copy(
+                    current.copy(
                         active = true,
                         oneShotCompleted = false,
                         lastTriggeredAt = null,
@@ -165,30 +183,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 repository.setReminderActive(reminder.id, active)
             }
-            container.geofenceManager.syncPlace(reminder.placeId)
+
             container.dwellScheduler.scheduleForPlace(reminder.placeId)
         }
     }
 
-    fun clearHistory() = viewModelScope.launch { repository.clearHistory() }
+    fun clearHistory() = operations.launch("history") { repository.clearHistory() }
 
     fun syncMonitoring(onResult: (String) -> Unit = {}) {
-        viewModelScope.launch {
+        operations.launch("monitoring", onDone = onResult) {
             val result = container.geofenceManager.syncAll()
-            repository.getActivePlaces().filter { it.inside }.forEach { container.dwellScheduler.scheduleForPlace(it.id) }
-            onResult(if (result.isSuccess) "Monitoramento atualizado." else "Não foi possível atualizar o monitoramento: ${result.exceptionOrNull()?.message.orEmpty()}")
+            repository.getActivePlaces().forEach { place ->
+                PlaceEventLocks.withLock(place.id) { container.dwellScheduler.scheduleForPlace(place.id) }
+            }
+            if (result.isSuccess) "Monitoramento atualizado."
+            else throw result.exceptionOrNull() ?: IllegalStateException("Não foi possível atualizar o monitoramento.")
         }
     }
 
     fun currentLocation(onResult: (Result<Pair<Double, Double>>) -> Unit) {
-        viewModelScope.launch { onResult(container.locationProvider.currentCoordinates()) }
+        operations.launch("location", onDone = onResult,
+            onError = { onResult(Result.failure(IllegalStateException(it))) }) {
+            container.locationProvider.currentCoordinates()
+        }
     }
 
     fun simulate(placeId: String, transition: LocationTransition, onDone: () -> Unit = {}) {
         if (!BuildConfig.DEBUG) return
-        viewModelScope.launch {
+        operations.launch("simulate:$placeId", onDone = { onDone() }) {
             container.eventProcessor.handle(placeId, transition, "teste manual", bypassDebounce = true, debugForceDwell = transition == LocationTransition.DWELL)
-            onDone()
         }
     }
 }

@@ -15,11 +15,28 @@ import com.lembraaqui.app.data.PlaceEntity
 import com.lembraaqui.app.data.ReminderEntity
 import com.lembraaqui.app.domain.ReminderType
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import com.lembraaqui.app.concurrency.suspendResult
 
 class GeofenceManager(
     private val context: Context,
     private val repository: AppRepository
 ) {
+    private val registrationMutex = Mutex()
+
+    // Global registration and per-place registration must never remove each other's work.
+    private suspend fun registration(block: suspend () -> Unit): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            suspendResult {
+                registrationMutex.withLock {
+                    block()
+                }
+            }
+        }
+
     private val client = LocationServices.getGeofencingClient(context)
 
     private val pendingIntent: PendingIntent by lazy {
@@ -36,11 +53,11 @@ class GeofenceManager(
         return fine && background
     }
 
-    suspend fun syncAll(): Result<Unit> = runCatching {
-        if (!hasRequiredPermission()) return@runCatching
+    suspend fun syncAll(): Result<Unit> = registration {
+        check(hasRequiredPermission()) { "Conceda as permissões de localização para ativar o monitoramento." }
         client.removeGeofences(pendingIntent).await()
         val places = repository.getActivePlaces().take(100)
-        if (places.isEmpty()) return@runCatching
+        if (places.isEmpty()) return@registration
         val geofences = places.map { place -> build(place, repository.getReminders(place.id)) }
         val request = GeofencingRequest.Builder()
             .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
@@ -52,10 +69,11 @@ class GeofenceManager(
         }
     }
 
-    suspend fun syncPlace(placeId: String): Result<Unit> = runCatching {
+    suspend fun syncPlace(placeId: String): Result<Unit> = registration {
         client.removeGeofences(listOf(requestId(placeId))).await()
-        val place = repository.getPlace(placeId) ?: return@runCatching
-        if (!place.active || !hasRequiredPermission()) return@runCatching
+        val place = repository.getPlace(placeId) ?: return@registration
+        if (!place.active) return@registration
+        check(hasRequiredPermission()) { "Conceda as permissões de localização para ativar o monitoramento." }
         val request = GeofencingRequest.Builder()
             .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
             .addGeofence(build(place, repository.getReminders(place.id)))
@@ -64,7 +82,7 @@ class GeofenceManager(
     }
 
     suspend fun removePlace(placeId: String) {
-        runCatching { client.removeGeofences(listOf(requestId(placeId))).await() }
+        registration { client.removeGeofences(listOf(requestId(placeId))).await() }.getOrThrow()
     }
 
     private fun build(place: PlaceEntity, reminders: List<ReminderEntity>): Geofence {

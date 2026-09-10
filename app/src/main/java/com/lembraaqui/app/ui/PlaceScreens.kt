@@ -65,8 +65,10 @@ fun PlaceDetailScreen(
     onOpenReminder: (String) -> Unit,
     onDebug: () -> Unit
 ) {
-    val place by vm.place(placeId).collectAsStateWithLifecycle(initialValue = null)
-    val reminders by vm.reminders(placeId).collectAsStateWithLifecycle(initialValue = emptyList())
+    val place by remember(vm, placeId) { vm.place(placeId) }.collectAsStateWithLifecycle(initialValue = null)
+    val reminders by remember(vm, placeId) { vm.reminders(placeId) }.collectAsStateWithLifecycle(initialValue = emptyList())
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    val placeBusy = "place:$placeId" in busy
     var confirmDelete by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -75,8 +77,8 @@ fun PlaceDetailScreen(
                 title = { Text(place?.name ?: "Lugar") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Voltar") } },
                 actions = {
-                    IconButton(onClick = onEdit, enabled = place != null) { Icon(Icons.Default.Edit, "Editar lugar") }
-                    IconButton(onClick = { confirmDelete = true }, enabled = place != null) { Icon(Icons.Default.Delete, "Excluir lugar") }
+                    IconButton(onClick = onEdit, enabled = place != null && !placeBusy) { Icon(Icons.Default.Edit, "Editar lugar") }
+                    IconButton(onClick = { confirmDelete = true }, enabled = place != null && !placeBusy) { Icon(Icons.Default.Delete, "Excluir lugar") }
                 }
             )
         },
@@ -99,7 +101,7 @@ fun PlaceDetailScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             place?.let { p ->
-                item { PlaceInfoCard(p) { vm.setPlaceActive(p.id, it) } }
+                item { PlaceInfoCard(p, enabled = !placeBusy) { vm.setPlaceActive(p.id, it) } }
                 item { Text("Lembretes", style = MaterialTheme.typography.titleLarge) }
                 if (reminders.isEmpty()) {
                     item {
@@ -112,7 +114,7 @@ fun PlaceDetailScreen(
                     }
                 } else {
                     items(reminders, key = { it.id }) { reminder ->
-                        ReminderCard(reminder, onClick = { onOpenReminder(reminder.id) }, onToggle = { vm.setReminderActive(reminder, it) })
+                        ReminderCard(reminder, enabled = !placeBusy && "reminder:${reminder.id}" !in busy, onClick = { onOpenReminder(reminder.id) }, onToggle = { vm.setReminderActive(reminder, it) })
                     }
                 }
                 if (BuildConfig.DEBUG) {
@@ -144,7 +146,7 @@ fun PlaceDetailScreen(
 }
 
 @Composable
-private fun PlaceInfoCard(place: PlaceEntity, onActiveChanged: (Boolean) -> Unit) {
+private fun PlaceInfoCard(place: PlaceEntity, enabled: Boolean, onActiveChanged: (Boolean) -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("${formatCoord(place.latitude)}, ${formatCoord(place.longitude)}", style = MaterialTheme.typography.bodyMedium)
@@ -154,7 +156,7 @@ private fun PlaceInfoCard(place: PlaceEntity, onActiveChanged: (Boolean) -> Unit
                     Text("Monitoramento", style = MaterialTheme.typography.titleSmall)
                     Text(if (place.active) "Ativo" else "Pausado", style = MaterialTheme.typography.bodySmall)
                 }
-                Switch(checked = place.active, onCheckedChange = onActiveChanged)
+                Switch(enabled = enabled, checked = place.active, onCheckedChange = onActiveChanged)
             }
             if (place.inside) Text("Estado atual: dentro da área", color = MaterialTheme.colorScheme.primary)
         }
@@ -162,7 +164,7 @@ private fun PlaceInfoCard(place: PlaceEntity, onActiveChanged: (Boolean) -> Unit
 }
 
 @Composable
-private fun ReminderCard(reminder: ReminderEntity, onClick: () -> Unit, onToggle: (Boolean) -> Unit) {
+private fun ReminderCard(reminder: ReminderEntity, enabled: Boolean, onClick: () -> Unit, onToggle: (Boolean) -> Unit) {
     val type = ReminderType.valueOf(reminder.type)
     Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -181,7 +183,7 @@ private fun ReminderCard(reminder: ReminderEntity, onClick: () -> Unit, onToggle
                 }
                 if (reminder.oneShotCompleted) Text("Concluído", style = MaterialTheme.typography.labelSmall)
             }
-            Switch(checked = reminder.active, onCheckedChange = onToggle)
+            Switch(enabled = enabled, checked = reminder.active, onCheckedChange = onToggle)
         }
     }
 }
@@ -198,9 +200,12 @@ fun PlaceEditScreen(
     val existingFlow = if (placeId == "new") {
         remember { kotlinx.coroutines.flow.flowOf<PlaceEntity?>(null) }
     } else {
-        vm.place(placeId)
+        remember(vm, placeId) { vm.place(placeId) }
     }
     val existing by existingFlow.collectAsStateWithLifecycle(initialValue = null)
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    val saving = "place:$placeId" in busy
+    val locating = "location" in busy
 
     var loadedId by remember { mutableStateOf<String?>(null) }
     var name by remember { mutableStateOf("") }
@@ -253,6 +258,7 @@ fun PlaceEditScreen(
                 Text("Localização", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 Button(
+                    enabled = !locating && !saving,
                     onClick = {
                         vm.currentLocation { result ->
                             result.onSuccess { (lat, lon) ->
@@ -268,7 +274,7 @@ fun PlaceEditScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(Icons.Default.LocationOn, null)
-                    Text("Usar minha localização atual", Modifier.padding(start = 8.dp))
+                    Text(if (locating) "Buscando localização…" else "Usar minha localização atual", Modifier.padding(start = 8.dp))
                 }
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
@@ -334,6 +340,7 @@ fun PlaceEditScreen(
             error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
             item {
                 Button(
+                    enabled = !saving && !locating && (placeId == "new" || (existing != null && loadedId == placeId)),
                     onClick = {
                         val parsed = CoordinateParser.parse(coordinatesText)
                         if (parsed is CoordinateParseResult.Error) {
@@ -344,7 +351,7 @@ fun PlaceEditScreen(
                         vm.savePlace(existing, name, coords.latitude, coords.longitude, radius, active, onSaved) { error = it }
                     },
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("Salvar lugar") }
+                ) { Text(if (saving) "Salvando…" else "Salvar lugar") }
             }
         }
     }

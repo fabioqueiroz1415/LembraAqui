@@ -3,6 +3,9 @@
 package com.lembraaqui.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -29,6 +32,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.State
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,6 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lembraaqui.app.MainViewModel
@@ -60,9 +70,16 @@ fun ReminderEditScreen(
         remember(vm, reminderId) { vm.reminder(reminderId) }
     }
     val existing by existingFlow.collectAsStateWithLifecycle(initialValue = null)
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    val saving = "reminder:${if (reminderId == "new") "new:$placeId" else reminderId}" in busy
 
     var loadedId by remember { mutableStateOf<String?>(null) }
-    var type by remember { mutableStateOf(ReminderType.ARRIVING) }
+    // Keep the immediate selection separate from the fields currently displayed.
+    // These states are read only by the UI sections that need them.
+    val selectedType = rememberSaveable(placeId, reminderId) { mutableStateOf(ReminderType.ARRIVING) }
+    val fieldsType = remember(placeId, reminderId) { mutableStateOf(ReminderType.ARRIVING) }
+    var typeEdited by rememberSaveable(placeId, reminderId) { mutableStateOf(false) }
+    DeferredReminderFields(selectedType, fieldsType)
     var message by remember { mutableStateOf("") }
     var dwellMinutes by remember { mutableStateOf(30) }
     var customDwell by remember { mutableStateOf("30") }
@@ -79,7 +96,12 @@ fun ReminderEditScreen(
         if (existing != null && loadedId != existing?.id) {
             existing?.let {
                 loadedId = it.id
-                type = ReminderType.valueOf(it.type)
+                // Loading an existing reminder must not undo a user's recent tap.
+                if (!typeEdited) {
+                    val initialType = ReminderType.valueOf(it.type)
+                    selectedType.value = initialType
+                    fieldsType.value = initialType
+                }
                 message = it.message
                 dwellMinutes = it.dwellMinutes ?: 30
                 customDwell = (it.dwellMinutes ?: 30).toString()
@@ -99,7 +121,7 @@ fun ReminderEditScreen(
                 title = { Text(if (reminderId == "new") "Adicionar lembrete" else "Editar lembrete") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Voltar") } },
                 actions = {
-                    if (existing != null) IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Excluir") }
+                    if (existing != null) IconButton(enabled = !saving, onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Excluir") }
                 }
             )
         }
@@ -109,27 +131,15 @@ fun ReminderEditScreen(
             contentPadding = PaddingValues(16.dp, inner.calculateTopPadding() + 8.dp, 16.dp, contentPadding.calculateBottomPadding() + 32.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            item {
-                Text("Quando devo lembrar?", style = MaterialTheme.typography.titleLarge)
-                Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ReminderType.entries.forEach { option ->
-                        Card(
-                            Modifier.fillMaxWidth().clickable { type = option },
-                        ) {
-                            Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                RadioButton(selected = type == option, onClick = { type = option })
-                                Column(Modifier.padding(start = 8.dp)) {
-                                    Text(option.label.uppercase(), style = MaterialTheme.typography.titleSmall)
-                                    Text(option.description(), style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
-                        }
-                    }
+            item(key = "reminder_type") {
+                ReminderTypeSelector(selectedType) { option ->
+                    typeEdited = true
+                    selectedType.value = option
                 }
             }
 
-            if (type == ReminderType.DWELL) {
-                item {
+            if (fieldsType.value == ReminderType.DWELL) {
+                item(key = "dwell_duration") {
                     Text("Após quanto tempo?", style = MaterialTheme.typography.titleMedium)
                     Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -164,7 +174,7 @@ fun ReminderEditScreen(
                 }
             }
 
-            item {
+            item(key = "message") {
                 OutlinedTextField(
                     value = message,
                     onValueChange = { message = it; error = null },
@@ -175,7 +185,7 @@ fun ReminderEditScreen(
                 )
             }
 
-            item {
+            item(key = "time_window") {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Column(Modifier.weight(1f)) {
                         Text("Restrição de horário", style = MaterialTheme.typography.titleMedium)
@@ -204,7 +214,7 @@ fun ReminderEditScreen(
                 }
             }
 
-            item {
+            item(key = "weekdays") {
                 Text("Dias da semana", style = MaterialTheme.typography.titleMedium)
                 val labels = mapOf(
                     DayOfWeek.MONDAY to "Seg", DayOfWeek.TUESDAY to "Ter", DayOfWeek.WEDNESDAY to "Qua",
@@ -233,7 +243,7 @@ fun ReminderEditScreen(
                 }
             }
 
-            item {
+            item(key = "repeat") {
                 Text("Repetição", style = MaterialTheme.typography.titleMedium)
                 Column(Modifier.padding(top = 6.dp)) {
                     RepeatMode.entries.forEach { mode ->
@@ -251,7 +261,7 @@ fun ReminderEditScreen(
                 }
             }
 
-            item {
+            item(key = "active") {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Column(Modifier.weight(1f)) {
                         Text("Lembrete ativo", style = MaterialTheme.typography.titleMedium)
@@ -261,11 +271,11 @@ fun ReminderEditScreen(
                 }
             }
 
-            error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
+            error?.let { item(key = "error") { Text(it, color = MaterialTheme.colorScheme.error) } }
 
-            item {
+            item(key = "save") {
                 Button(
-                    enabled = reminderId == "new" || (existing != null && loadedId == reminderId),
+                    enabled = !saving && (reminderId == "new" || (existing != null && loadedId == reminderId)),
                     onClick = {
                         val start = if (restrictedTime) parseMinute(startText) else null
                         val end = if (restrictedTime) parseMinute(endText) else null
@@ -276,9 +286,9 @@ fun ReminderEditScreen(
                         vm.saveReminder(
                             existing = existing,
                             placeId = placeId,
-                            type = type,
+                            type = selectedType.value,
                             message = message,
-                            dwellMinutes = if (type == ReminderType.DWELL) dwellMinutes else null,
+                            dwellMinutes = if (selectedType.value == ReminderType.DWELL) dwellMinutes else null,
                             startMinute = start,
                             endMinute = end,
                             daysMask = daysMask,
@@ -289,7 +299,7 @@ fun ReminderEditScreen(
                         )
                     },
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("Salvar lembrete") }
+                ) { Text(if (saving) "Salvando…" else "Salvar lembrete") }
             }
         }
     }
@@ -307,5 +317,62 @@ fun ReminderEditScreen(
             },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancelar") } }
         )
+    }
+}
+
+/**
+ * Allow a frame containing the selection feedback before changing the form.
+ * Frame callbacks run before drawing, so two successive frame boundaries are
+ * intentional. This suspends without sleeping or blocking the UI thread.
+ * collectLatest cancels an obsolete pending update after another selection.
+ */
+@Composable
+private fun DeferredReminderFields(
+    selectedType: State<ReminderType>,
+    fieldsType: MutableState<ReminderType>
+) {
+    LaunchedEffect(selectedType, fieldsType) {
+        snapshotFlow { selectedType.value }.collectLatest { requested ->
+            if (fieldsType.value != requested) {
+                withFrameNanos { }
+                withFrameNanos { }
+                if (selectedType.value == requested) fieldsType.value = requested
+            }
+        }
+    }
+}
+
+/** Local selection feedback; no database work or form reconstruction on tap. */
+@Composable
+private fun ReminderTypeSelector(
+    selectedType: State<ReminderType>,
+    onSelect: (ReminderType) -> Unit
+) {
+    Text("Quando devo lembrar?", style = MaterialTheme.typography.titleLarge)
+    Column(
+        Modifier.padding(top = 8.dp).selectableGroup(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ReminderType.entries.forEach { option ->
+            val selected = selectedType.value == option
+            Card(
+                modifier = Modifier.fillMaxWidth().selectable(
+                    selected = selected,
+                    role = Role.RadioButton,
+                    onClick = { onSelect(option) }
+                ),
+                // The border provides immediate feedback independent of the
+                // RadioButton's normal selection animation.
+                border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null
+            ) {
+                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = selected, onClick = null)
+                    Column(Modifier.padding(start = 8.dp)) {
+                        Text(option.label.uppercase(), style = MaterialTheme.typography.titleSmall)
+                        Text(option.description(), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
     }
 }

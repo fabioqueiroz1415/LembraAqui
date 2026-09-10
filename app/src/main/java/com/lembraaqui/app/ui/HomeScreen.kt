@@ -50,6 +50,7 @@ fun HomeScreen(
     onPermissions: () -> Unit
 ) {
     val places by vm.places.collectAsStateWithLifecycle()
+    val busy by vm.busy.collectAsStateWithLifecycle()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -89,7 +90,7 @@ fun HomeScreen(
                 }
             } else {
                 items(places, key = { it.id }) { place ->
-                    PlaceCard(place, onOpenPlace = { onOpenPlace(place.id) }, onActiveChanged = { vm.setPlaceActive(place.id, it) })
+                    PlaceCard(place, enabled = "place:${place.id}" !in busy, onOpenPlace = { onOpenPlace(place.id) }, onActiveChanged = { vm.setPlaceActive(place.id, it) })
                 }
             }
         }
@@ -132,7 +133,7 @@ private fun EmptyPlacesCard(onAddPlace: () -> Unit) {
 }
 
 @Composable
-private fun PlaceCard(place: PlaceSummaryRow, onOpenPlace: () -> Unit, onActiveChanged: (Boolean) -> Unit) {
+private fun PlaceCard(place: PlaceSummaryRow, enabled: Boolean, onOpenPlace: () -> Unit, onActiveChanged: (Boolean) -> Unit) {
     Card(Modifier.fillMaxWidth().clickable(onClick = onOpenPlace)) {
         Row(
             Modifier.fillMaxWidth().padding(16.dp),
@@ -156,7 +157,7 @@ private fun PlaceCard(place: PlaceSummaryRow, onOpenPlace: () -> Unit, onActiveC
                     color = if (place.active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
                 )
             }
-            Switch(checked = place.active, onCheckedChange = onActiveChanged)
+            Switch(enabled = enabled, checked = place.active, onCheckedChange = onActiveChanged)
         }
     }
 }

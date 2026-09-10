@@ -9,13 +9,15 @@ import com.lembraaqui.app.domain.ReminderPolicy
 import com.lembraaqui.app.domain.ReminderType
 import com.lembraaqui.app.domain.TransitionReducer
 import java.time.ZonedDateTime
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class EventProcessor(
     private val repository: AppRepository,
     private val notificationHelper: NotificationHelper,
     private val dwellScheduler: DwellScheduler
 ) {
-    suspend fun handle(placeId: String, transition: LocationTransition, source: String = "detecção automática", bypassDebounce: Boolean = false, debugForceDwell: Boolean = false) {
+    suspend fun handle(placeId: String, transition: LocationTransition, source: String = "detecção automática", bypassDebounce: Boolean = false, debugForceDwell: Boolean = false) = withContext(Dispatchers.IO) {
         PlaceEventLocks.withLock(placeId) {
             handleLocked(placeId, transition, source, bypassDebounce, debugForceDwell)
         }
