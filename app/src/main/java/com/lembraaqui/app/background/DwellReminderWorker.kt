@@ -36,6 +36,7 @@ class DwellReminderWorker(
         if (!allowed) return Result.success()
 
         val shown = container.notificationHelper.show(
+            reminder.id,
             place.id,
             place.name,
             ReminderType.DWELL,

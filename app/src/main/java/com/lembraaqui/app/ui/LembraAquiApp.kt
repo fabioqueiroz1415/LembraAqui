@@ -29,7 +29,7 @@ import com.lembraaqui.app.PermissionStatus
 import com.lembraaqui.app.PermissionStatusReader
 
 @Composable
-fun LembraAquiApp(openPlaceId: String?, onOpenPlaceConsumed: () -> Unit, vm: MainViewModel = viewModel()) {
+fun LembraAquiApp(openPlaceId: String?, openReminderId: String?, onOpenPlaceConsumed: () -> Unit, vm: MainViewModel = viewModel()) {
     val nav = rememberNavController()
     val context = LocalContext.current
     var permissionStatus by remember { mutableStateOf(PermissionStatusReader.read(context)) }
@@ -39,9 +39,16 @@ fun LembraAquiApp(openPlaceId: String?, onOpenPlaceConsumed: () -> Unit, vm: Mai
         if (permissionStatus.geofencingReady) vm.syncMonitoring()
     }
 
-    LaunchedEffect(openPlaceId) {
-        openPlaceId?.let {
-            nav.navigate("place/$it") { launchSingleTop = true }
+    LaunchedEffect(openPlaceId, openReminderId) {
+        if (openReminderId != null) {
+            nav.navigate("reminder/${Uri.encode(openReminderId)}") {
+                popUpTo("home")
+                launchSingleTop = true
+            }
+            onOpenPlaceConsumed()
+        } else if (openPlaceId != null) {
+            // Compatibilidade com notificações publicadas antes desta atualização.
+            nav.navigate("place/${Uri.encode(openPlaceId)}") { launchSingleTop = true }
             onOpenPlaceConsumed()
         }
     }
@@ -73,7 +80,7 @@ fun LembraAquiApp(openPlaceId: String?, onOpenPlaceConsumed: () -> Unit, vm: Mai
                     onBack = { nav.popBackStack() },
                     onEdit = { nav.navigate("place-edit/$id") },
                     onAddReminder = { nav.navigate("reminder-edit/$id/new") },
-                    onEditReminder = { nav.navigate("reminder-edit/$id/$it") },
+                    onOpenReminder = { nav.navigate("reminder/${Uri.encode(it)}") },
                     onDebug = { nav.navigate("debug/$id") }
                 )
             }
@@ -95,6 +102,19 @@ fun LembraAquiApp(openPlaceId: String?, onOpenPlaceConsumed: () -> Unit, vm: Mai
                         }
                     },
                     onNeedPermission = { nav.navigate("permissions") }
+                )
+            }
+            composable(
+                "reminder/{id}",
+                arguments = listOf(navArgument("id") { type = NavType.StringType })
+            ) { entry ->
+                val id = entry.arguments?.getString("id") ?: return@composable
+                ReminderDetailScreen(
+                    vm = vm,
+                    reminderId = id,
+                    contentPadding = padding,
+                    onBack = { nav.popBackStack() },
+                    onEdit = { placeId -> nav.navigate("reminder-edit/${Uri.encode(placeId)}/${Uri.encode(id)}") }
                 )
             }
             composable(

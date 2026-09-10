@@ -57,7 +57,7 @@ fun ReminderEditScreen(
     val existingFlow = if (reminderId == "new") {
         remember { kotlinx.coroutines.flow.flowOf<ReminderEntity?>(null) }
     } else {
-        vm.reminder(reminderId)
+        remember(vm, reminderId) { vm.reminder(reminderId) }
     }
     val existing by existingFlow.collectAsStateWithLifecycle(initialValue = null)
 
@@ -99,7 +99,7 @@ fun ReminderEditScreen(
                 title = { Text(if (reminderId == "new") "Adicionar lembrete" else "Editar lembrete") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Voltar") } },
                 actions = {
-                    if (reminderId != "new") IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Excluir") }
+                    if (existing != null) IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Excluir") }
                 }
             )
         }
@@ -265,6 +265,7 @@ fun ReminderEditScreen(
 
             item {
                 Button(
+                    enabled = reminderId == "new" || (existing != null && loadedId == reminderId),
                     onClick = {
                         val start = if (restrictedTime) parseMinute(startText) else null
                         val end = if (restrictedTime) parseMinute(endText) else null

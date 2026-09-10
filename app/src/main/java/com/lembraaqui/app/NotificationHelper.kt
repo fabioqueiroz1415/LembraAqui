@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.net.Uri
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
@@ -33,14 +34,16 @@ class NotificationHelper(private val context: Context) {
         }
     }
 
-    fun show(placeId: String, placeName: String, type: ReminderType, message: String, dwellMinutes: Int? = null): Boolean {
+    fun show(reminderId: String, placeId: String, placeName: String, type: ReminderType, message: String, dwellMinutes: Int? = null): Boolean {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            data = Uri.Builder().scheme("lembraaqui").authority("reminder").appendPath(reminderId).build()
+            putExtra("open_reminder_id", reminderId)
             putExtra("open_place_id", placeId)
         }
         val pending = PendingIntent.getActivity(
             context,
-            placeId.hashCode(),
+            reminderId.hashCode(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

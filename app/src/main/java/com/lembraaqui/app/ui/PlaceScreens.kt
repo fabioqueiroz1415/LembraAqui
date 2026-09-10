@@ -62,7 +62,7 @@ fun PlaceDetailScreen(
     onBack: () -> Unit,
     onEdit: () -> Unit,
     onAddReminder: () -> Unit,
-    onEditReminder: (String) -> Unit,
+    onOpenReminder: (String) -> Unit,
     onDebug: () -> Unit
 ) {
     val place by vm.place(placeId).collectAsStateWithLifecycle(initialValue = null)
@@ -112,7 +112,7 @@ fun PlaceDetailScreen(
                     }
                 } else {
                     items(reminders, key = { it.id }) { reminder ->
-                        ReminderCard(reminder, onClick = { onEditReminder(reminder.id) }, onToggle = { vm.setReminderActive(reminder, it) })
+                        ReminderCard(reminder, onClick = { onOpenReminder(reminder.id) }, onToggle = { vm.setReminderActive(reminder, it) })
                     }
                 }
                 if (BuildConfig.DEBUG) {

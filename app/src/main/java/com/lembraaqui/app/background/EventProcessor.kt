@@ -74,7 +74,7 @@ class EventProcessor(
         cycleId: Long,
         now: ZonedDateTime
     ) {
-        val shown = notificationHelper.show(placeId, placeName, type, reminder.message, reminder.dwellMinutes)
+        val shown = notificationHelper.show(reminder.id, placeId, placeName, type, reminder.message, reminder.dwellMinutes)
         if (shown) {
             repository.markTriggered(reminder, System.currentTimeMillis(), ReminderPolicy.dayKey(now.toLocalDate()), cycleId)
             repository.addHistory(placeId, placeName, "REMINDER_${type.name}", "Lembrete disparado: ${reminder.message}")
